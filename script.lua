@@ -1,13 +1,12 @@
 --// SPIRO TARGET
 --// R15
---// ФИНАЛЬНАЯ ВЕРСИЯ (30 итерация: фиксы вылетов Xeno + критические баги)
+--// ФИНАЛЬНАЯ ВЕРСИЯ (35 итерация: все правки)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 
--- VirtualInputManager берём через pcall, чтобы скрипт не падал, если сервис недоступен
 local VirtualInputManager = nil
 pcall(function()
 	VirtualInputManager = game:GetService("VirtualInputManager")
@@ -25,8 +24,6 @@ local LocalPlayer = Players.LocalPlayer
 
 local ToggleFreecam
 local ToggleSpectate
-local StartSpiroCamera
-local StopSpiroCamera
 local StartFly
 local StopFly
 local StopSpiro
@@ -36,6 +33,7 @@ local UpdateHelpLabel
 local SpiroButton, FlyButton, ESPButton, FreecamButton, SpectateButton, PianoButton
 local StatusLabel, HelpLabel
 local PianoNotesBox
+local StartSpectate
 
 --==================================================
 -- ФЛАГИ
@@ -71,15 +69,11 @@ local SPECTATE_HEIGHT_OFFSET = 2
 local SPECTATE_SENSITIVITY = 0.005
 local SPECTATE_LERP = 0.25
 
-local SPIRO_CAM_DISTANCE = 12
-local SPIRO_CAM_HEIGHT_OFFSET = 1.5
-local SPIRO_CAM_SENSITIVITY = 0.005
-local SPIRO_CAM_LERP = 0.3
-
 local CAM_ZOOM_SPEED = 2
 
 -- PIANO
 local PIANO_BASE_DURATION = 0.05
+local PIANO_FIXED_PAUSE = 0.05
 local PIANO_NOTES = ""
 
 local MOVEMENT_UPDATE_RATE = 30
@@ -153,15 +147,6 @@ local SpectateOldMouseBehavior = nil
 local SpectateOldMouseIconEnabled = nil
 local SpectateCurrentPos = nil
 
-local SpiroCamYaw = 0
-local SpiroCamPitch = 0
-local SpiroCamDistance = 12
-local SpiroCamOldCameraType = nil
-local SpiroCamOldCameraSubject = nil
-local SpiroCamOldMouseBehavior = nil
-local SpiroCamOldMouseIconEnabled = nil
-local SpiroCamCurrentPos = nil
-
 local FreecamCFrame = nil
 local FreecamYaw = 0
 local FreecamPitch = 0
@@ -177,7 +162,6 @@ local FreecamOldWalkSpeed = 16
 local FreecamOldJumpPower = 50
 local FreecamOldJumpHeight = 7.2
 
--- PIANO SLOTS
 local PIANO_SLOTS = {"", "", "", ""}
 local CURRENT_SLOT = 1
 
@@ -196,7 +180,6 @@ local function SetupCharacter(NewCharacter)
 
 	if SpectateEnabled and StopSpectate then StopSpectate() end
 	if FreecamEnabled and ToggleFreecam then ToggleFreecam() end
-	if SpiroCamOldCameraType and StopSpiroCamera then StopSpiroCamera() end
 
 	Humanoid = Character:WaitForChild("Humanoid", 5)
 	RootPart = Character:WaitForChild("HumanoidRootPart", 5)
@@ -240,12 +223,11 @@ if LocalPlayer.Character then SetupCharacter(LocalPlayer.Character) end
 LocalPlayer.CharacterAdded:Connect(function(NewCharacter) SetupCharacter(NewCharacter) end)
 
 --==================================================
--- STOP SPIRO
+-- ОСТАНОВКА SPIRO
 --==================================================
 
 StopSpiro = function()
-	if SpiroEnabled then SpiroEnabled = false end
-	if SpiroCamOldCameraType and StopSpiroCamera then StopSpiroCamera() end
+	SpiroEnabled = false
 	CurrentPoint = 1
 	MovementAccumulator = 0
 	if Humanoid then Humanoid.AutoRotate = true end
@@ -282,14 +264,14 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = PlayerGui
 
 --==================================================
--- MAIN FRAME
+-- MAIN FRAME (разворачивается ОТ ВЕРХА)
 --==================================================
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+MainFrame.AnchorPoint = Vector2.new(0.5, 0)
 MainFrame.Size = UDim2.new(0, 420, 0, COLLAPSED_MENU_HEIGHT)
-MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+MainFrame.Position = UDim2.new(0.5, 0, 0, 100)
 MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 30)
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
@@ -772,22 +754,16 @@ CreateSetting("Высота", SPECTATE_HEIGHT_OFFSET, function(Value) SPECTATE_H
 CreateSetting("Скорость поворота", SPECTATE_SENSITIVITY * 1000, function(Value) SPECTATE_SENSITIVITY = math.clamp(Value / 1000, 0.001, 0.05) end)
 CreateSetting("Плавность (0-1)", SPECTATE_LERP, function(Value) SPECTATE_LERP = math.clamp(Value, 0.02, 1) end)
 
-CreateSubHeader("SPIRO CAM", SettingsSection.Body)
-CreateSetting("Дистанция", SPIRO_CAM_DISTANCE, function(Value)
-	SPIRO_CAM_DISTANCE = math.clamp(Value, 2, 50)
-	SpiroCamDistance = SPIRO_CAM_DISTANCE
-end)
-CreateSetting("Высота", SPIRO_CAM_HEIGHT_OFFSET, function(Value) SPIRO_CAM_HEIGHT_OFFSET = math.clamp(Value, -20, 20) end)
-CreateSetting("Скорость поворота", SPIRO_CAM_SENSITIVITY * 1000, function(Value) SPIRO_CAM_SENSITIVITY = math.clamp(Value / 1000, 0.001, 0.05) end)
-CreateSetting("Плавность (0-1)", SPIRO_CAM_LERP, function(Value) SPIRO_CAM_LERP = math.clamp(Value, 0.02, 1) end)
-
 CreateSubHeader("PIANO", SettingsSection.Body)
 CreateSetting("Базовая нота (сек)", PIANO_BASE_DURATION, function(Value)
 	PIANO_BASE_DURATION = math.clamp(Value, 0.01, 0.5)
 end)
+CreateSetting("Фикс. пауза '-' (сек)", PIANO_FIXED_PAUSE, function(Value)
+	PIANO_FIXED_PAUSE = math.clamp(Value, 0.01, 1)
+end)
 
 --==================================================
--- СЕКЦИЯ: PIANO (закрыта по умолчанию)
+-- СЕКЦИЯ: PIANO
 --==================================================
 
 local PianoSection = CreateSection("PIANO (4 СЛОТА)", false)
@@ -855,9 +831,9 @@ SlotButtons[1].BackgroundColor3 = Color3.fromRGB(60, 110, 180)
 local NotesLabel = Instance.new("TextLabel")
 NotesLabel.Size = UDim2.new(1, 0, 0, 22)
 NotesLabel.BackgroundTransparency = 1
-NotesLabel.Text = "Вставь ноты (Ctrl+V). До ~10000 символов на слот."
+NotesLabel.Text = "Ноты: 6(0.1) - нота с задержкой, 66 - аккорд, '-' - фикс. пауза"
 NotesLabel.TextColor3 = Color3.fromRGB(190, 190, 200)
-NotesLabel.TextSize = 12
+NotesLabel.TextSize = 11
 NotesLabel.Font = Enum.Font.Gotham
 NotesLabel.TextXAlignment = Enum.TextXAlignment.Left
 NotesLabel.Parent = PianoSection.Body
@@ -868,7 +844,7 @@ PianoNotesBox.Size = UDim2.new(1, 0, 0, 280)
 PianoNotesBox.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
 PianoNotesBox.TextColor3 = Color3.fromRGB(255, 255, 255)
 PianoNotesBox.Text = PIANO_SLOTS[1] or ""
-PianoNotesBox.PlaceholderText = "Вставь ноты сюда (Ctrl+V)"
+PianoNotesBox.PlaceholderText = "Пример: 6(0.1) 66(0.2) 4(0.05)"
 PianoNotesBox.TextSize = 11
 PianoNotesBox.Font = Enum.Font.Code
 PianoNotesBox.ClearTextOnFocus = false
@@ -959,7 +935,7 @@ end
 UpdateHelpLabel = function()
 	if not HelpLabel then return end
 	HelpLabel.Text =
-		"SPIRO (" .. SPIRO_KEY.Name .. ") — движение вокруг цели\n" ..
+		"SPIRO (" .. SPIRO_KEY.Name .. ") — orbit + движение вокруг цели\n" ..
 		"FLY (" .. FLY_KEY.Name .. ") — WASD + Space / Ctrl\n" ..
 		"ESP (" .. ESP_KEY.Name .. ") — подсветка + HP\n" ..
 		"FREECAM (" .. FREECAM_KEY.Name .. ") — свободная камера\n" ..
@@ -1240,7 +1216,74 @@ local function CreateESP()
 end
 
 --==================================================
--- ОТКЛЮЧЕНИЕ TARGET
+-- SPECTATE
+--==================================================
+
+StartSpectate = function()
+	if SpectateEnabled then return end
+	if not TargetPlayer then
+		StatusLabel.Text = "Сначала выберите игрока!"
+		return false
+	end
+	local TargetRoot = GetTargetRoot()
+	if not TargetRoot then
+		StatusLabel.Text = "Цель мертва — spectate недоступен"
+		return false
+	end
+	local Camera = workspace.CurrentCamera
+	if not Camera then return false end
+
+	SpectateOldCameraType = Camera.CameraType
+	SpectateOldCameraSubject = Camera.CameraSubject
+	SpectateOldMouseBehavior = UserInputService.MouseBehavior
+	SpectateOldMouseIconEnabled = UserInputService.MouseIconEnabled
+
+	SpectateYaw = 0
+	SpectatePitch = math.rad(-15)
+	SpectateDistance = SPECTATE_DISTANCE
+	SpectateCurrentPos = nil
+
+	Camera.CameraType = Enum.CameraType.Scriptable
+	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+	UserInputService.MouseIconEnabled = false
+
+	SpectateEnabled = true
+	if SpectateButton then SpectateButton.Text = "SPECTATE: ON" end
+	return true
+end
+
+StopSpectate = function()
+	if not SpectateEnabled then return end
+	SpectateEnabled = false
+
+	local Camera = workspace.CurrentCamera
+	if Camera then
+		Camera.CameraType = SpectateOldCameraType or Enum.CameraType.Custom
+		if SpectateOldCameraSubject then
+			Camera.CameraSubject = SpectateOldCameraSubject
+		elseif Humanoid then
+			Camera.CameraSubject = Humanoid
+		end
+	end
+
+	UserInputService.MouseBehavior = SpectateOldMouseBehavior or Enum.MouseBehavior.Default
+	if SpectateOldMouseIconEnabled == nil then
+		UserInputService.MouseIconEnabled = true
+	else
+		UserInputService.MouseIconEnabled = SpectateOldMouseIconEnabled
+	end
+
+	SpectateYaw = 0
+	SpectatePitch = 0
+	SpectateCurrentPos = nil
+	SpectateOldCameraType = nil
+	SpectateOldCameraSubject = nil
+
+	if SpectateButton then SpectateButton.Text = "SPECTATE: OFF" end
+end
+
+--==================================================
+-- ОТКЛЮЧЕНИЕ TARGET ПРИ СМЕРТИ
 --==================================================
 
 DisableTargetBecauseDead = function()
@@ -1248,14 +1291,15 @@ DisableTargetBecauseDead = function()
 	DeadHandled = true
 
 	if SpiroEnabled then SpiroEnabled = false end
-	if SpiroCamOldCameraType and StopSpiroCamera then StopSpiroCamera() end
+	if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
+
+	if SpectateEnabled then StopSpectate() end
+	StatusLabel.Text = "Цель: мертва — SPIRO и SPECTATE выключены"
 
 	CurrentPoint = 1
 	MovementAccumulator = 0
 
 	if Humanoid then Humanoid.AutoRotate = true end
-	if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
-	if TargetPlayer then StatusLabel.Text = "Цель: мертва — SPIRO выключен" end
 
 	UpdateESPColors()
 end
@@ -1350,7 +1394,7 @@ local function SelectTarget(Player)
 
 	if WasSpectating then
 		task.delay(0.2, function()
-			if TargetPlayer and ToggleSpectate then ToggleSpectate() end
+			if TargetPlayer and StartSpectate then StartSpectate() end
 		end)
 	end
 end
@@ -1477,65 +1521,21 @@ local function MoveTowards(Position, Speed, DeltaTime, LookAtPosition)
 end
 
 --==================================================
--- SPIRO CAMERA
---==================================================
-
-StartSpiroCamera = function()
-	if not TargetPlayer then return end
-	local TargetCharacter = TargetPlayer.Character
-	if not TargetCharacter then return end
-	local TargetHead = TargetCharacter:FindFirstChild("Head")
-		or TargetCharacter:FindFirstChild("HumanoidRootPart")
-	if not TargetHead then return end
-	local Camera = workspace.CurrentCamera
-	if not Camera then return end
-
-	SpiroCamOldCameraType = Camera.CameraType
-	SpiroCamOldCameraSubject = Camera.CameraSubject
-	SpiroCamOldMouseBehavior = UserInputService.MouseBehavior
-	SpiroCamOldMouseIconEnabled = UserInputService.MouseIconEnabled
-
-	SpiroCamYaw = 0
-	SpiroCamPitch = math.rad(-15)
-	SpiroCamDistance = SPIRO_CAM_DISTANCE
-	SpiroCamCurrentPos = nil
-
-	Camera.CameraType = Enum.CameraType.Scriptable
-	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-	UserInputService.MouseIconEnabled = false
-end
-
-StopSpiroCamera = function()
-	if not SpiroCamOldCameraType then return end
-	local Camera = workspace.CurrentCamera
-	if Camera then
-		Camera.CameraType = SpiroCamOldCameraType or Enum.CameraType.Custom
-		if SpiroCamOldCameraSubject then
-			Camera.CameraSubject = SpiroCamOldCameraSubject
-		elseif Humanoid then
-			Camera.CameraSubject = Humanoid
-		end
-	end
-	UserInputService.MouseBehavior = SpiroCamOldMouseBehavior or Enum.MouseBehavior.Default
-	if SpiroCamOldMouseIconEnabled == nil then
-		UserInputService.MouseIconEnabled = true
-	else
-		UserInputService.MouseIconEnabled = SpiroCamOldMouseIconEnabled
-	end
-	SpiroCamOldCameraType = nil
-	SpiroCamOldCameraSubject = nil
-	SpiroCamOldMouseBehavior = nil
-	SpiroCamOldMouseIconEnabled = nil
-	SpiroCamCurrentPos = nil
-	SpiroCamYaw = 0
-	SpiroCamPitch = 0
-end
-
---==================================================
--- TOGGLE SPIRO
+-- TOGGLE SPIRO (SPECTATE + SPIRO)
 --==================================================
 
 local function ToggleSpiro()
+	if SpiroEnabled then
+		SpiroEnabled = false
+		if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
+		if SpectateEnabled and StopSpectate then StopSpectate() end
+		CurrentPoint = 1
+		MovementAccumulator = 0
+		if Humanoid then Humanoid.AutoRotate = true end
+		StatusLabel.Text = "SPIRO выключен"
+		return
+	end
+
 	if not TargetPlayer then
 		StatusLabel.Text = "Сначала выберите игрока!"
 		task.delay(1.5, function()
@@ -1546,32 +1546,117 @@ local function ToggleSpiro()
 
 	local TargetRoot = GetTargetRoot()
 	if not TargetRoot then
-		SpiroEnabled = false
-		if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
 		StatusLabel.Text = "Цель мертва — выберите/дождитесь возрождения"
 		return
 	end
 
-	SpiroEnabled = not SpiroEnabled
+	if FreecamEnabled and ToggleFreecam then ToggleFreecam() end
+
+	local Success = StartSpectate()
+	if not Success then
+		StatusLabel.Text = "Не удалось включить SPECTATE"
+		return
+	end
+
+	SpiroEnabled = true
 	CurrentPoint = 1
 	MovementAccumulator = 0
+	if Humanoid then Humanoid.AutoRotate = false end
 
-	if Humanoid then Humanoid.AutoRotate = not SpiroEnabled end
-
-	if SpiroEnabled then
-		if SpiroButton then SpiroButton.Text = "SPIRO: ON" end
-		StatusLabel.Text = "SPIRO активен: " .. TargetPlayer.Name
-		if SpectateEnabled and StopSpectate then StopSpectate() end
-		if FreecamEnabled and ToggleFreecam then ToggleFreecam() end
-		StartSpiroCamera()
-	else
-		if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
-		StatusLabel.Text = "SPIRO выключен"
-		StopSpiroCamera()
-	end
+	if SpiroButton then SpiroButton.Text = "SPIRO: ON" end
+	StatusLabel.Text = "SPIRO активен: " .. TargetPlayer.Name
 end
 
 SpiroButton.MouseButton1Click:Connect(ToggleSpiro)
+
+--==================================================
+-- SPECTATE TOGGLE (V)
+--==================================================
+
+ToggleSpectate = function()
+	if SpectateEnabled then
+		StopSpectate()
+		StatusLabel.Text = "SPECTATE выключен"
+	else
+		if SpiroEnabled then
+			SpiroEnabled = false
+			if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
+		end
+		if FreecamEnabled and ToggleFreecam then ToggleFreecam() end
+
+		local Success = StartSpectate()
+		if Success then
+			StatusLabel.Text = "SPECTATE: orbit вокруг цели"
+		end
+	end
+end
+
+SpectateButton.MouseButton1Click:Connect(function() ToggleSpectate() end)
+
+--==================================================
+-- SPECTATE UPDATE
+--==================================================
+
+RunService.RenderStepped:Connect(function(DeltaTime)
+	if not SpectateEnabled then return end
+	local Camera = workspace.CurrentCamera
+	if not Camera then return end
+
+	local MenuOpen = not MenuCollapsed
+
+	if not MenuOpen then
+		if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
+			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		end
+		if UserInputService.MouseIconEnabled then
+			UserInputService.MouseIconEnabled = false
+		end
+		local MouseDelta = UserInputService:GetMouseDelta()
+		SpectateYaw = SpectateYaw - MouseDelta.X * SPECTATE_SENSITIVITY
+		SpectatePitch = math.clamp(
+			SpectatePitch - MouseDelta.Y * SPECTATE_SENSITIVITY,
+			-math.rad(85),
+			math.rad(85)
+		)
+	else
+		if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		end
+		if not UserInputService.MouseIconEnabled then
+			UserInputService.MouseIconEnabled = true
+		end
+	end
+
+	local ZoomDelta = UserInputService:GetMouseWheelDelta()
+	if ZoomDelta ~= 0 and not MenuOpen then
+		SpectateDistance = math.clamp(
+			SpectateDistance - ZoomDelta * CAM_ZOOM_SPEED,
+			2, 50
+		)
+	end
+
+	local TargetRoot = GetTargetRoot()
+	local FocusPosition
+	if TargetRoot then
+		FocusPosition = TargetRoot.Position + Vector3.new(0, SPECTATE_HEIGHT_OFFSET, 0)
+	else
+		if SpectateCurrentPos then FocusPosition = SpectateCurrentPos
+		else return end
+	end
+
+	local Rotation = CFrame.Angles(0, SpectateYaw, 0) * CFrame.Angles(SpectatePitch, 0, 0)
+	local Offset = Rotation * Vector3.new(0, 0, SpectateDistance)
+	local DesiredPos = FocusPosition + Offset
+	local DesiredCFrame = CFrame.lookAt(DesiredPos, FocusPosition)
+
+	if not SpectateCurrentPos then
+		SpectateCurrentPos = DesiredPos
+		Camera.CFrame = DesiredCFrame
+	else
+		SpectateCurrentPos = SpectateCurrentPos:Lerp(DesiredPos, SPECTATE_LERP)
+		Camera.CFrame = CFrame.lookAt(SpectateCurrentPos, FocusPosition)
+	end
+end)
 
 --==================================================
 -- FLY
@@ -1693,229 +1778,7 @@ end
 ESPButton.MouseButton1Click:Connect(ToggleESP)
 
 --==================================================
--- SPECTATE
---==================================================
-
-local function StartSpectate()
-	if SpectateEnabled then return end
-	if not TargetPlayer then
-		StatusLabel.Text = "Сначала выберите игрока!"
-		task.delay(1.5, function()
-			if not TargetPlayer then StatusLabel.Text = "Цель: не выбрана" end
-		end)
-		return
-	end
-	local TargetRoot = GetTargetRoot()
-	if not TargetRoot then
-		StatusLabel.Text = "Цель мертва — spectate недоступен"
-		return
-	end
-	local Camera = workspace.CurrentCamera
-	if not Camera then return end
-
-	SpectateOldCameraType = Camera.CameraType
-	SpectateOldCameraSubject = Camera.CameraSubject
-	SpectateOldMouseBehavior = UserInputService.MouseBehavior
-	SpectateOldMouseIconEnabled = UserInputService.MouseIconEnabled
-
-	SpectateYaw = 0
-	SpectatePitch = math.rad(-15)
-	SpectateDistance = SPECTATE_DISTANCE
-	SpectateCurrentPos = nil
-
-	Camera.CameraType = Enum.CameraType.Scriptable
-	UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-	UserInputService.MouseIconEnabled = false
-
-	SpectateEnabled = true
-	if SpectateButton then SpectateButton.Text = "SPECTATE: ON" end
-	StatusLabel.Text = "SPECTATE: orbit вокруг " .. TargetPlayer.Name
-end
-
-StopSpectate = function()
-	if not SpectateEnabled then return end
-	SpectateEnabled = false
-
-	local Camera = workspace.CurrentCamera
-	if Camera then
-		Camera.CameraType = SpectateOldCameraType or Enum.CameraType.Custom
-		if SpectateOldCameraSubject then
-			Camera.CameraSubject = SpectateOldCameraSubject
-		elseif Humanoid then
-			Camera.CameraSubject = Humanoid
-		end
-	end
-
-	UserInputService.MouseBehavior = SpectateOldMouseBehavior or Enum.MouseBehavior.Default
-	if SpectateOldMouseIconEnabled == nil then
-		UserInputService.MouseIconEnabled = true
-	else
-		UserInputService.MouseIconEnabled = SpectateOldMouseIconEnabled
-	end
-
-	SpectateYaw = 0
-	SpectatePitch = 0
-	SpectateCurrentPos = nil
-	SpectateOldCameraType = nil
-	SpectateOldCameraSubject = nil
-
-	if SpectateButton then SpectateButton.Text = "SPECTATE: OFF" end
-	StatusLabel.Text = "SPECTATE выключен"
-end
-
-ToggleSpectate = function()
-	if SpectateEnabled then
-		StopSpectate()
-	else
-		if SpiroEnabled then StopSpiro() end
-		if FreecamEnabled and ToggleFreecam then ToggleFreecam() end
-		StartSpectate()
-	end
-end
-
-SpectateButton.MouseButton1Click:Connect(function() ToggleSpectate() end)
-
---==================================================
--- SPECTATE UPDATE
---==================================================
-
-RunService.RenderStepped:Connect(function(DeltaTime)
-	if not SpectateEnabled then return end
-	local Camera = workspace.CurrentCamera
-	if not Camera then return end
-
-	local MenuOpen = not MenuCollapsed
-
-	if not MenuOpen then
-		if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
-			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-		end
-		if UserInputService.MouseIconEnabled then
-			UserInputService.MouseIconEnabled = false
-		end
-		local MouseDelta = UserInputService:GetMouseDelta()
-		SpectateYaw = SpectateYaw - MouseDelta.X * SPECTATE_SENSITIVITY
-		SpectatePitch = math.clamp(
-			SpectatePitch - MouseDelta.Y * SPECTATE_SENSITIVITY,
-			-math.rad(85),
-			math.rad(85)
-		)
-	else
-		if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
-			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-		end
-		if not UserInputService.MouseIconEnabled then
-			UserInputService.MouseIconEnabled = true
-		end
-	end
-
-	local ZoomDelta = UserInputService:GetMouseWheelDelta()
-	if ZoomDelta ~= 0 and not MenuOpen then
-		SpectateDistance = math.clamp(
-			SpectateDistance - ZoomDelta * CAM_ZOOM_SPEED,
-			2, 50
-		)
-	end
-
-	local TargetRoot = GetTargetRoot()
-	local FocusPosition
-	if TargetRoot then
-		FocusPosition = TargetRoot.Position + Vector3.new(0, SPECTATE_HEIGHT_OFFSET, 0)
-	else
-		if SpectateCurrentPos then FocusPosition = SpectateCurrentPos
-		else return end
-	end
-
-	local Rotation = CFrame.Angles(0, SpectateYaw, 0) * CFrame.Angles(SpectatePitch, 0, 0)
-	local Offset = Rotation * Vector3.new(0, 0, SpectateDistance)
-	local DesiredPos = FocusPosition + Offset
-	local DesiredCFrame = CFrame.lookAt(DesiredPos, FocusPosition)
-
-	if not SpectateCurrentPos then
-		SpectateCurrentPos = DesiredPos
-		Camera.CFrame = DesiredCFrame
-	else
-		SpectateCurrentPos = SpectateCurrentPos:Lerp(DesiredPos, SPECTATE_LERP)
-		Camera.CFrame = CFrame.lookAt(SpectateCurrentPos, FocusPosition)
-	end
-end)
-
---==================================================
--- SPIRO CAMERA UPDATE
---==================================================
-
-RunService.RenderStepped:Connect(function(DeltaTime)
-	if not SpiroEnabled then return end
-	if SpectateEnabled then return end
-	if FreecamEnabled then return end
-
-	local Camera = workspace.CurrentCamera
-	if not Camera then return end
-
-	local MenuOpen = not MenuCollapsed
-
-	if not MenuOpen then
-		if UserInputService.MouseBehavior ~= Enum.MouseBehavior.LockCenter then
-			UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
-		end
-		if UserInputService.MouseIconEnabled then
-			UserInputService.MouseIconEnabled = false
-		end
-		local MouseDelta = UserInputService:GetMouseDelta()
-		SpiroCamYaw = SpiroCamYaw - MouseDelta.X * SPIRO_CAM_SENSITIVITY
-		SpiroCamPitch = math.clamp(
-			SpiroCamPitch - MouseDelta.Y * SPIRO_CAM_SENSITIVITY,
-			-math.rad(85),
-			math.rad(85)
-		)
-	else
-		if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
-			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-		end
-		if not UserInputService.MouseIconEnabled then
-			UserInputService.MouseIconEnabled = true
-		end
-	end
-
-	local ZoomDelta = UserInputService:GetMouseWheelDelta()
-	if ZoomDelta ~= 0 and not MenuOpen then
-		SpiroCamDistance = math.clamp(
-			SpiroCamDistance - ZoomDelta * CAM_ZOOM_SPEED,
-			2, 50
-		)
-	end
-
-	local TargetCharacter = TargetPlayer and TargetPlayer.Character
-	local TargetHead = nil
-	if TargetCharacter then
-		TargetHead = TargetCharacter:FindFirstChild("Head")
-			or TargetCharacter:FindFirstChild("HumanoidRootPart")
-	end
-
-	local FocusPosition
-	if TargetHead then
-		FocusPosition = TargetHead.Position + Vector3.new(0, SPIRO_CAM_HEIGHT_OFFSET, 0)
-	else
-		if SpiroCamCurrentPos then FocusPosition = SpiroCamCurrentPos
-		else return end
-	end
-
-	local Rotation = CFrame.Angles(0, SpiroCamYaw, 0) * CFrame.Angles(SpiroCamPitch, 0, 0)
-	local Offset = Rotation * Vector3.new(0, 0, SpiroCamDistance)
-	local DesiredPos = FocusPosition + Offset
-	local DesiredCFrame = CFrame.lookAt(DesiredPos, FocusPosition)
-
-	if not SpiroCamCurrentPos then
-		SpiroCamCurrentPos = DesiredPos
-		Camera.CFrame = DesiredCFrame
-	else
-		SpiroCamCurrentPos = SpiroCamCurrentPos:Lerp(DesiredPos, SPIRO_CAM_LERP)
-		Camera.CFrame = CFrame.lookAt(SpiroCamCurrentPos, FocusPosition)
-	end
-end)
-
---==================================================
--- AUTO PIANO
+-- AUTO PIANO (без аккордов, задержки в скобках, '-' фикс. пауза)
 --==================================================
 
 local CHAR_TO_KEY = {
@@ -1950,16 +1813,6 @@ local CHAR_TO_KEY = {
 	["N"] = Enum.KeyCode.N, ["M"] = Enum.KeyCode.M,
 }
 
-local PAUSE_TABLE = {
-	["-"] = 0.05,
-	["_"] = 0.15,
-	["."] = 0.02,
-	[","] = 0.07,
-	[";"] = 0.20,
-	[":"] = 0.35,
-	["|"] = 0.25,
-}
-
 local SHIFT_SYMBOLS = {
 	["!"] = true, ["@"] = true, ["#"] = true, ["$"] = true, ["%"] = true,
 	["^"] = true, ["&"] = true, ["*"] = true, ["("] = true, [")"] = true,
@@ -1979,7 +1832,7 @@ local function SendKeyUp(KeyCode, Shift)
 	end)
 end
 
-local function PressKey(Char, HoldTime)
+local function PressNote(Char, HoldTime)
 	local KeyCode = CHAR_TO_KEY[Char]
 	if not KeyCode then return end
 	local Shift = SHIFT_SYMBOLS[Char] or false
@@ -1988,86 +1841,51 @@ local function PressKey(Char, HoldTime)
 	SendKeyUp(KeyCode, Shift)
 end
 
-local function PressChord(Chars, HoldTime)
-	local PressedKeys = {}
-	for Char in string.gmatch(Chars, ".") do
-		local KeyCode = CHAR_TO_KEY[Char]
-		if KeyCode then
-			local Shift = SHIFT_SYMBOLS[Char] or false
-			table.insert(PressedKeys, { key = KeyCode, shift = Shift })
-			SendKeyDown(KeyCode, Shift)
-		end
-	end
-	task.wait(HoldTime or 0.02)
-	for _, Info in ipairs(PressedKeys) do
-		SendKeyUp(Info.key, Info.shift)
-	end
-end
-
+-- Парсим ноты:
+--   X(число)  = нота X с кастомной задержкой
+--   X         = нота X с базовой задержкой
+--   -         = фиксированная пауза PIANO_FIXED_PAUSE
+--   пробелы   = игнорируются
 local function TokenizeNotes(RawNotes)
 	local Tokens = {}
 	RawNotes = RawNotes:gsub("[\r\n]+", " ")
+
 	local i = 1
 	while i <= #RawNotes do
 		local Char = RawNotes:sub(i, i)
-		if Char == "[" then
-			local EndPos = RawNotes:find("]", i)
-			if EndPos then
-				local Chord = RawNotes:sub(i + 1, EndPos - 1)
-				local NextChar = RawNotes:sub(EndPos + 1, EndPos + 1)
-				local Multiplier = 1
-				if NextChar == "-" then
-					local j = EndPos + 1
-					while RawNotes:sub(j, j) == "-" do
-						Multiplier += 1
-						j += 1
+
+		if Char == "-" then
+			-- Фиксированная пауза
+			table.insert(Tokens, { type = "pause", delay = PIANO_FIXED_PAUSE })
+			i = i + 1
+
+		elseif CHAR_TO_KEY[Char] then
+			-- Нота. Проверяем, есть ли после неё скобка с числом
+			local Note = Char
+			i = i + 1
+
+			local Delay = PIANO_BASE_DURATION
+
+			if RawNotes:sub(i, i) == "(" then
+				local EndPos = RawNotes:find(")", i)
+				if EndPos then
+					local NumberStr = RawNotes:sub(i + 1, EndPos - 1)
+					local Number = tonumber(NumberStr)
+					if Number then
+						Delay = Number
 					end
-					i = j
-				elseif NextChar == "_" then
-					local j = EndPos + 1
-					while RawNotes:sub(j, j) == "_" do
-						Multiplier += 3
-						j += 1
-					end
-					i = j
-				else
 					i = EndPos + 1
 				end
-				table.insert(Tokens, { type = "chord", value = Chord, multiplier = Multiplier })
-			else
-				i = i + 1
 			end
-		elseif PAUSE_TABLE[Char] then
-			local StartPos = i
-			while i <= #RawNotes and RawNotes:sub(i, i) == Char do
-				i += 1
-			end
-			local Pause = RawNotes:sub(StartPos, i - 1)
-			table.insert(Tokens, { type = "pause", value = PAUSE_TABLE[Char] * #Pause })
-		elseif Char:match("[%w]") or SHIFT_SYMBOLS[Char] then
-			local Note = Char
-			i += 1
-			local Multiplier = 1
-			if RawNotes:sub(i, i) == "-" then
-				local j = i
-				while RawNotes:sub(j, j) == "-" do
-					Multiplier += 1
-					j += 1
-				end
-				i = j
-			elseif RawNotes:sub(i, i) == "_" then
-				local j = i
-				while RawNotes:sub(j, j) == "_" do
-					Multiplier += 3
-					j += 1
-				end
-				i = j
-			end
-			table.insert(Tokens, { type = "note", value = Note, multiplier = Multiplier })
+
+			table.insert(Tokens, { type = "note", value = Note, delay = Delay })
+
 		else
+			-- Пробел или неизвестный символ — пропускаем
 			i = i + 1
 		end
 	end
+
 	return Tokens
 end
 
@@ -2095,18 +1913,17 @@ local function PlayPiano()
 	StatusLabel.Text = "PIANO: слот " .. CURRENT_SLOT .. " — " .. Total .. " токенов"
 
 	task.spawn(function()
-		for i, Token in ipairs(Tokens) do
+		for _, Token in ipairs(Tokens) do
 			if not PianoPlaying then break end
+
 			if Token.type == "note" then
-				PressKey(Token.value, PIANO_BASE_DURATION * 0.4)
-				task.wait(PIANO_BASE_DURATION * (Token.multiplier or 1))
-			elseif Token.type == "chord" then
-				PressChord(Token.value, PIANO_BASE_DURATION * 0.4)
-				task.wait(PIANO_BASE_DURATION * (Token.multiplier or 1))
+				PressNote(Token.value, 0.02)
+				task.wait(Token.delay or PIANO_BASE_DURATION)
 			elseif Token.type == "pause" then
-				task.wait(Token.value)
+				task.wait(Token.delay or PIANO_FIXED_PAUSE)
 			end
 		end
+
 		PianoPlaying = false
 		if PianoButton then PianoButton.Text = "PIANO: STOP" end
 		StatusLabel.Text = "PIANO: песня закончена"
@@ -2296,8 +2113,9 @@ local function FreezeCharacter()
 	if FlyEnabled then StopFly() end
 	if SpiroEnabled then
 		SpiroEnabled = false
-		if SpiroCamOldCameraType and StopSpiroCamera then StopSpiroCamera() end
+		if SpiroButton then SpiroButton.Text = "SPIRO: OFF" end
 	end
+	if SpectateEnabled and StopSpectate then StopSpectate() end
 
 	Humanoid.AutoRotate = false
 	Humanoid.WalkSpeed = 0
@@ -2327,7 +2145,7 @@ local function UnfreezeCharacter()
 		MovementAccumulator = 0
 		if SpiroButton then SpiroButton.Text = "SPIRO: ON" end
 		Humanoid.AutoRotate = false
-		if StartSpiroCamera then StartSpiroCamera() end
+		if StartSpectate then StartSpectate() end
 		StatusLabel.Text = "SPIRO активен: " .. TargetPlayer.Name
 	end
 
@@ -2409,8 +2227,6 @@ FreecamButton.MouseButton1Click:Connect(function() ToggleFreecam() end)
 
 RunService.RenderStepped:Connect(function(DeltaTime)
 	if not FreecamEnabled then return end
-	if SpiroEnabled then return end
-	if SpectateEnabled then return end
 
 	local Camera = workspace.CurrentCamera
 	if not Camera or not FreecamCFrame then return end
@@ -2464,6 +2280,6 @@ end)
 -- ЗАПУСК
 --==================================================
 
-print("KILL AURA + AUTO PIANO (4 СЛОТА) успешно запущен")
-print("Меню центрировано, VIM защищён через pcall")
-print("Клавиша PIANO: " .. PIANO_KEY.Name)
+print("KILL AURA + AUTO PIANO успешно запущен")
+print("SPIRO (Z) = SPECTATE + движение. Повторный Z — выкл всё.")
+print("Пианино: 6(0.1) — нота 6 с задержкой 0.1; '-' — фикс. пауза")
